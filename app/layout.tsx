@@ -20,7 +20,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head></head>
       <body className={`font-sans antialiased`} suppressHydrationWarning>
         <SolanaWalletProvider>
