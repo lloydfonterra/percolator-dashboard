@@ -12,10 +12,20 @@ interface ChartDataPoint {
   close: number
 }
 
+type TokenSymbol = "solana" | "bitcoin" | "ethereum"
+
 export function TradingChart() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedToken, setSelectedToken] = useState<TokenSymbol>("solana")
+  const [timeRange, setTimeRange] = useState<"7d" | "30d">("30d")
+
+  const tokenConfig = {
+    solana: { name: "Solana (SOL)", color: "#a78bfa" },
+    bitcoin: { name: "Bitcoin (BTC)", color: "#f97316" },
+    ethereum: { name: "Ethereum (ETH)", color: "#3b82f6" },
+  }
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -25,39 +35,79 @@ export function TradingChart() {
         setLoading(true)
         setError(null)
 
-        // Fetch real historical data from CoinGecko
-        const response = await fetch(
-          "https://api.coingecko.com/api/v3/coins/solana/market_chart?vs_currency=usd&days=30&interval=daily"
-        )
-        const data = await response.json()
+        const days = timeRange === "7d" ? "7" : "30"
+        
+        // Try higher resolution data from Binance (more accurate)
+        let chartData: ChartDataPoint[] = []
+        
+        try {
+          const klineInterval = timeRange === "7d" ? "4h" : "1d" // 4 hourly for 7d, daily for 30d
+          const symbol = 
+            selectedToken === "solana" ? "SOLUSDT" : 
+            selectedToken === "bitcoin" ? "BTCUSDT" : 
+            "ETHUSDT"
+          
+          const limit = timeRange === "7d" ? 42 : 30 // Roughly covers the period
+          
+          const response = await fetch(
+            `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${klineInterval}&limit=${limit}`,
+            { signal: AbortSignal.timeout(5000) }
+          )
 
-        if (!data.prices || data.prices.length === 0) {
-          throw new Error("No data received from API")
+          if (response.ok) {
+            const data = await response.json()
+            chartData = data.map((kline: any[]) => {
+              const date = new Date(kline[0])
+              const dateString = date.toISOString().split("T")[0]
+              
+              return {
+                time: dateString,
+                open: parseFloat(kline[1]),
+                high: parseFloat(kline[2]),
+                low: parseFloat(kline[3]),
+                close: parseFloat(kline[4]),
+              }
+            })
+          }
+        } catch (binanceErr) {
+          console.warn("Binance chart failed, falling back to CoinGecko:", binanceErr)
         }
 
-        // Convert API data to candlestick format
-        // CoinGecko returns [timestamp, price] so we'll group data into OHLC
-        const prices = data.prices as [number, number][]
-        const chartData: ChartDataPoint[] = []
+        // Fallback to CoinGecko if Binance fails
+        if (chartData.length === 0) {
+          const response = await fetch(
+            `https://api.coingecko.com/api/v3/coins/${selectedToken}/market_chart?vs_currency=usd&days=${days}&interval=${timeRange === "7d" ? "daily" : "daily"}`,
+            { signal: AbortSignal.timeout(5000) }
+          )
+          const data = await response.json()
 
-        // Group prices into candlesticks (using daily data)
-        for (let i = 0; i < prices.length; i++) {
-          const [timestamp, price] = prices[i]
-          const date = new Date(timestamp)
-          const dateString = date.toISOString().split("T")[0]
+          if (!data.prices || data.prices.length === 0) {
+            throw new Error("No data received from API")
+          }
 
-          // For daily data, use the price as close and estimate OHLC
-          const change = prices[i - 1] ? price - prices[i - 1][1] : 0
-          const variation = Math.abs(change) * 0.5
+          // Convert API data to candlestick format
+          const prices = data.prices as [number, number][]
+          
+          for (let i = 0; i < prices.length; i++) {
+            const [timestamp, price] = prices[i]
+            const date = new Date(timestamp)
+            const dateString = date.toISOString().split("T")[0]
 
-          chartData.push({
-            time: dateString,
-            open: prices[i - 1] ? prices[i - 1][1] : price,
-            high: Math.max(prices[i - 1] ? prices[i - 1][1] : price, price) + variation,
-            low: Math.min(prices[i - 1] ? prices[i - 1][1] : price, price) - variation,
-            close: price,
-          })
+            // Estimate OHLC from price movements
+            const change = prices[i - 1] ? price - prices[i - 1][1] : 0
+            const variation = Math.abs(change) * 0.5
+
+            chartData.push({
+              time: dateString,
+              open: prices[i - 1] ? prices[i - 1][1] : price,
+              high: Math.max(prices[i - 1] ? prices[i - 1][1] : price, price) + variation,
+              low: Math.min(prices[i - 1] ? prices[i - 1][1] : price, price) - variation,
+              close: price,
+            })
+          }
         }
+
+        if (!containerRef.current) return
 
         // Create chart
         const chart = createChart(containerRef.current, {
@@ -86,28 +136,35 @@ export function TradingChart() {
 
         candlestickSeries.setData(chartData)
 
-        // Add moving average (20-day SMA)
-        const maPeriod = 20
-        const maData = chartData
-          .filter((_, i) => i >= maPeriod - 1)
-          .map((_, i) => {
-            const sum = chartData
-              .slice(i - maPeriod + 1, i + 1)
-              .reduce((acc, val) => acc + val.close, 0)
-            return {
-              time: chartData[i + maPeriod - 1].time,
-              value: sum / maPeriod,
+        // Calculate and add Simple Moving Average (20-period)
+        if (chartData.length > 20) {
+          const sma20: ChartDataPoint[] = []
+          
+          for (let i = 19; i < chartData.length; i++) {
+            let sum = 0
+            for (let j = 0; j < 20; j++) {
+              sum += chartData[i - j].close
             }
+            const average = sum / 20
+            sma20.push({
+              ...chartData[i],
+              close: average,
+              open: average,
+              high: average,
+              low: average,
+            })
+          }
+
+          const lineSeries = chart.addLineSeries({
+            color: tokenConfig[selectedToken].color,
+            lineWidth: 2,
+            title: "SMA(20)",
           })
 
-        const lineSeries = chart.addLineSeries({
-          color: "#3b82f6",
-          lineWidth: 2,
-        })
+          lineSeries.setData(sma20)
+        }
 
-        lineSeries.setData(maData)
-
-        // Fit content
+        // Set data range to show all candles
         chart.timeScale().fitContent()
 
         // Handle window resize
@@ -118,6 +175,7 @@ export function TradingChart() {
         }
 
         window.addEventListener("resize", handleResize)
+
         setLoading(false)
 
         return () => {
@@ -125,46 +183,67 @@ export function TradingChart() {
           chart.remove()
         }
       } catch (err) {
-        console.error("Chart rendering error:", err)
-        setError("Failed to load chart data")
+        console.error("Chart fetch error:", err)
+        setError("Failed to load chart data. Please try again.")
         setLoading(false)
       }
     }
 
-    const cleanup = fetchAndRenderChart()
-
-    return () => {
-      if (cleanup) {
-        cleanup.then((fn) => fn && fn())
-      }
-    }
-  }, [])
+    fetchAndRenderChart()
+  }, [selectedToken, timeRange])
 
   return (
     <Card className="bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700">
-      <CardHeader className="pb-3">
+      <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle className="text-white">SOL/USDT - 30 Day Chart</CardTitle>
-          <span className="text-xs text-slate-400">Real-time data from CoinGecko</span>
+          <div>
+            <CardTitle className="text-white">Market Chart</CardTitle>
+            <p className="text-sm text-slate-400 mt-1">Real-time candlestick data</p>
+          </div>
+          <div className="flex gap-2">
+            <div className="flex gap-1">
+              {(["7d", "30d"] as const).map((range) => (
+                <button
+                  key={range}
+                  onClick={() => setTimeRange(range)}
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    timeRange === range
+                      ? "bg-blue-600 text-white"
+                      : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                  }`}
+                >
+                  {range === "7d" ? "7D" : "30D"}
+                </button>
+              ))}
+            </div>
+            <select
+              value={selectedToken}
+              onChange={(e) => setSelectedToken(e.target.value as TokenSymbol)}
+              className="px-3 py-1 rounded text-sm bg-slate-700 text-white border border-slate-600 cursor-pointer hover:bg-slate-600"
+            >
+              <option value="solana">Solana (SOL)</option>
+              <option value="bitcoin">Bitcoin (BTC)</option>
+              <option value="ethereum">Ethereum (ETH)</option>
+            </select>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
-        {loading && (
-          <div className="w-full bg-slate-950 rounded-lg flex items-center justify-center" style={{ height: "400px" }}>
-            <div className="text-slate-400 text-sm">Loading chart data...</div>
-          </div>
-        )}
         {error && (
-          <div className="w-full bg-slate-950 rounded-lg flex items-center justify-center p-4" style={{ height: "400px" }}>
-            <div className="text-red-400 text-sm text-center">{error}</div>
+          <div className="p-4 bg-red-500/10 border border-red-500 rounded text-red-400 text-sm mb-4">
+            {error}
           </div>
         )}
+        {loading && (
+          <div className="h-96 bg-slate-800 rounded animate-pulse flex items-center justify-center">
+            <p className="text-slate-400">Loading chart data...</p>
+          </div>
+        )}
+        {!loading && !error && <div ref={containerRef} className="w-full" />}
         {!loading && !error && (
-          <div
-            ref={containerRef}
-            className="w-full bg-slate-950 rounded-lg overflow-hidden"
-            style={{ height: "400px" }}
-          />
+          <p className="text-xs text-slate-500 mt-4 text-center">
+            Displaying {selectedToken.toUpperCase()} • Time Range: {timeRange} • SMA(20) included
+          </p>
         )}
       </CardContent>
     </Card>

@@ -10,6 +10,7 @@ interface TokenPrice {
   usd_24h_change?: number
   usd_high_24h?: number
   usd_low_24h?: number
+  source?: string
 }
 
 interface PriceData {
@@ -27,8 +28,53 @@ export function MarketDataDisplay() {
     const fetchPrices = async () => {
       try {
         setError(null)
+        
+        // Try Binance API first (most accurate real-time data)
+        try {
+          const response = await fetch(
+            "https://api.binance.com/api/v3/ticker/24hr?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22,%22SOLUSDT%22%5D",
+            { signal: AbortSignal.timeout(5000) }
+          )
+          
+          if (response.ok) {
+            const data = await response.json()
+            const binanceData: PriceData = {}
+            
+            data.forEach((ticker: any) => {
+              const symbol = ticker.symbol
+              let key = ""
+              
+              if (symbol === "BTCUSDT") key = "bitcoin"
+              else if (symbol === "ETHUSDT") key = "ethereum"
+              else if (symbol === "SOLUSDT") key = "solana"
+              
+              if (key) {
+                binanceData[key] = {
+                  usd: parseFloat(ticker.lastPrice),
+                  usd_24h_change: parseFloat(ticker.priceChangePercent),
+                  usd_high_24h: parseFloat(ticker.highPrice),
+                  usd_low_24h: parseFloat(ticker.lowPrice),
+                  source: "Binance"
+                }
+              }
+            })
+            
+            if (Object.keys(binanceData).length > 0) {
+              setPrices(binanceData)
+              setLastUpdate(new Date())
+              setRetryCount(0)
+              setLoading(false)
+              return
+            }
+          }
+        } catch (binanceErr) {
+          console.warn("Binance API failed, falling back to CoinGecko:", binanceErr)
+        }
+        
+        // Fallback to CoinGecko if Binance fails
         const response = await fetch(
-          "https://api.coingecko.com/api/v3/simple/price?ids=solana,bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true"
+          "https://api.coingecko.com/api/v3/simple/price?ids=solana,bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true",
+          { signal: AbortSignal.timeout(5000) }
         )
 
         if (!response.ok) {
@@ -36,7 +82,16 @@ export function MarketDataDisplay() {
         }
 
         const data = await response.json()
-        setPrices(data)
+        const coingeckoData: PriceData = {}
+        
+        Object.keys(data).forEach(key => {
+          coingeckoData[key] = {
+            ...data[key],
+            source: "CoinGecko"
+          }
+        })
+        
+        setPrices(coingeckoData)
         setLastUpdate(new Date())
         setRetryCount(0)
         setLoading(false)
@@ -49,17 +104,14 @@ export function MarketDataDisplay() {
         if (retryCount < 3) {
           setTimeout(fetchPrices, 2000 * (retryCount + 1))
         } else {
-          setError("Unable to fetch market data. Please refresh the page.")
+          setError("Unable to fetch market data")
         }
       }
     }
 
-    // Initial fetch
     fetchPrices()
-
-    // Refresh every 10 seconds (faster than before)
-    const interval = setInterval(fetchPrices, 10000)
-
+    // Refresh every 5 seconds for real-time updates (faster than before)
+    const interval = setInterval(fetchPrices, 5000)
     return () => clearInterval(interval)
   }, [retryCount])
 
@@ -137,6 +189,10 @@ export function MarketDataDisplay() {
                             ${low24h.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
+                        <div className="flex justify-between pt-1 border-t border-white/10">
+                          <span className="text-white/50">Source:</span>
+                          <span className="text-white/70 text-xs">{price.source}</span>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -157,7 +213,7 @@ export function MarketDataDisplay() {
 
       {lastUpdate && !error && (
         <p className="text-xs text-slate-500 text-center">
-          Last updated: {lastUpdate.toLocaleTimeString()}
+          Last updated: {lastUpdate.toLocaleTimeString()} • Auto-refresh every 5 seconds
         </p>
       )}
     </div>
