@@ -3,12 +3,6 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "framework": "nextjs",
-  "env": {
-    "NEXT_PUBLIC_RPC_ENDPOINT": "@next_public_rpc_endpoint",
-    "NEXT_PUBLIC_ROUTER_PROGRAM": "@next_public_router_program",
-    "NEXT_PUBLIC_SLAB_PROGRAM": "@next_public_slab_program",
-    "NEXT_PUBLIC_COMMITMENT": "@next_public_commitment"
-  },
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 30
