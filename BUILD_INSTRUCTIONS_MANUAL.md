@@ -56,9 +56,16 @@ Write-Host "Clean complete"
 
 ## 🏗️ Step 4: Regenerate Lock File
 
+**CRITICAL**: Delete the old Cargo.lock FIRST:
+
 ```powershell
+# Delete the problematic lock file
+rm Cargo.lock
+Write-Host "Cargo.lock deleted"
+
+# Now regenerate it
 cargo update
-Write-Host "Lock file updated"
+Write-Host "Lock file regenerated successfully"
 ```
 
 ---
@@ -69,11 +76,15 @@ This is the critical step. Run:
 
 ```powershell
 Write-Host "Starting Solana program build..." -ForegroundColor Cyan
+Write-Host "This will take 5-10 minutes..." -ForegroundColor Yellow
 cargo build-sbf
-Write-Host "Build complete!" -ForegroundColor Green
 ```
 
-**This will take 5-10 minutes. Let it run completely.**
+**⚠️ IMPORTANT**: 
+- **Do NOT interrupt** the build while it's running
+- **Do NOT close** the terminal window
+- Let it run to completion
+- The build may show "uninstalling toolchain" briefly - this is normal, it gets reinstalled
 
 **Expected output at the end:**
 ```
@@ -82,6 +93,14 @@ Write-Host "Build complete!" -ForegroundColor Green
    Compiling percolator_slab v0.1.0
     Finished sbf-solana-solana/debug profile [unoptimized + debuginfo] target(s) in 120s
 ```
+
+If you see an error about the lock file again:
+```
+# The toolchain may have been uninstalled. Run this:
+solana-install init
+```
+
+Then try `cargo build-sbf` again.
 
 ---
 
