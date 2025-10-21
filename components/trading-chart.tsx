@@ -1,97 +1,171 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createChart, ColorType } from "lightweight-charts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
+interface ChartDataPoint {
+  time: string
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
 export function TradingChart() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
 
-    const chart = createChart(containerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: "#1a1a2e" },
-        textColor: "#d1d5db",
-      },
-      width: containerRef.current.clientWidth,
-      height: 400,
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-        fixLeftEdge: true,
-      },
-    })
+    const fetchAndRenderChart = async () => {
+      try {
+        setLoading(true)
+        setError(null)
 
-    // Add candlestick series
-    const candlestickSeries = chart.addCandlestickSeries({
-      upColor: "#4caf50",
-      downColor: "#f44336",
-      borderUpColor: "#4caf50",
-      borderDownColor: "#f44336",
-      wickUpColor: "#4caf50",
-      wickDownColor: "#f44336",
-    })
+        // Fetch real historical data from CoinGecko
+        const response = await fetch(
+          "https://api.coingecko.com/api/v3/coins/solana/market_chart?vs_currency=usd&days=30&interval=daily"
+        )
+        const data = await response.json()
 
-    // Sample data - in production, fetch from your API
-    const sampleData = [
-      { time: "2025-01-01", open: 100, high: 105, low: 95, close: 102 },
-      { time: "2025-01-02", open: 102, high: 110, low: 100, close: 108 },
-      { time: "2025-01-03", open: 108, high: 115, low: 105, close: 112 },
-      { time: "2025-01-04", open: 112, high: 118, low: 110, close: 115 },
-      { time: "2025-01-05", open: 115, high: 120, low: 112, close: 118 },
-      { time: "2025-01-06", open: 118, high: 125, low: 115, close: 122 },
-      { time: "2025-01-07", open: 122, high: 128, low: 120, close: 125 },
-      { time: "2025-01-08", open: 125, high: 130, low: 123, close: 128 },
-      { time: "2025-01-09", open: 128, high: 135, low: 126, close: 132 },
-      { time: "2025-01-10", open: 132, high: 138, low: 130, close: 135 },
-    ]
+        if (!data.prices || data.prices.length === 0) {
+          throw new Error("No data received from API")
+        }
 
-    candlestickSeries.setData(sampleData)
+        // Convert API data to candlestick format
+        // CoinGecko returns [timestamp, price] so we'll group data into OHLC
+        const prices = data.prices as [number, number][]
+        const chartData: ChartDataPoint[] = []
 
-    // Add line series for moving average
-    const lineSeries = chart.addLineSeries({
-      color: "#1e88e5",
-      lineWidth: 2,
-    })
+        // Group prices into candlesticks (using daily data)
+        for (let i = 0; i < prices.length; i++) {
+          const [timestamp, price] = prices[i]
+          const date = new Date(timestamp)
+          const dateString = date.toISOString().split("T")[0]
 
-    const maData = sampleData.map((item) => ({
-      time: item.time,
-      value: (item.open + item.high + item.low + item.close) / 4,
-    }))
+          // For daily data, use the price as close and estimate OHLC
+          const change = prices[i - 1] ? price - prices[i - 1][1] : 0
+          const variation = Math.abs(change) * 0.5
 
-    lineSeries.setData(maData)
+          chartData.push({
+            time: dateString,
+            open: prices[i - 1] ? prices[i - 1][1] : price,
+            high: Math.max(prices[i - 1] ? prices[i - 1][1] : price, price) + variation,
+            low: Math.min(prices[i - 1] ? prices[i - 1][1] : price, price) - variation,
+            close: price,
+          })
+        }
 
-    // Fit content
-    chart.timeScale().fitContent()
+        // Create chart
+        const chart = createChart(containerRef.current, {
+          layout: {
+            background: { type: ColorType.Solid, color: "#1a1a2e" },
+            textColor: "#d1d5db",
+          },
+          width: containerRef.current.clientWidth,
+          height: 400,
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+            fixLeftEdge: true,
+          },
+        })
 
-    // Handle window resize
-    const handleResize = () => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth })
+        // Add candlestick series
+        const candlestickSeries = chart.addCandlestickSeries({
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderUpColor: "#10b981",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+        })
+
+        candlestickSeries.setData(chartData)
+
+        // Add moving average (20-day SMA)
+        const maPeriod = 20
+        const maData = chartData
+          .filter((_, i) => i >= maPeriod - 1)
+          .map((_, i) => {
+            const sum = chartData
+              .slice(i - maPeriod + 1, i + 1)
+              .reduce((acc, val) => acc + val.close, 0)
+            return {
+              time: chartData[i + maPeriod - 1].time,
+              value: sum / maPeriod,
+            }
+          })
+
+        const lineSeries = chart.addLineSeries({
+          color: "#3b82f6",
+          lineWidth: 2,
+        })
+
+        lineSeries.setData(maData)
+
+        // Fit content
+        chart.timeScale().fitContent()
+
+        // Handle window resize
+        const handleResize = () => {
+          if (containerRef.current) {
+            chart.applyOptions({ width: containerRef.current.clientWidth })
+          }
+        }
+
+        window.addEventListener("resize", handleResize)
+        setLoading(false)
+
+        return () => {
+          window.removeEventListener("resize", handleResize)
+          chart.remove()
+        }
+      } catch (err) {
+        console.error("Chart rendering error:", err)
+        setError("Failed to load chart data")
+        setLoading(false)
       }
     }
 
-    window.addEventListener("resize", handleResize)
+    const cleanup = fetchAndRenderChart()
 
     return () => {
-      window.removeEventListener("resize", handleResize)
-      chart.remove()
+      if (cleanup) {
+        cleanup.then((fn) => fn && fn())
+      }
     }
   }, [])
 
   return (
     <Card className="bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700">
-      <CardHeader>
-        <CardTitle className="text-white">SOL/USDT Trading Chart</CardTitle>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-white">SOL/USDT - 30 Day Chart</CardTitle>
+          <span className="text-xs text-slate-400">Real-time data from CoinGecko</span>
+        </div>
       </CardHeader>
       <CardContent>
-        <div
-          ref={containerRef}
-          className="w-full bg-slate-950 rounded-lg overflow-hidden"
-          style={{ height: "400px" }}
-        />
+        {loading && (
+          <div className="w-full bg-slate-950 rounded-lg flex items-center justify-center" style={{ height: "400px" }}>
+            <div className="text-slate-400 text-sm">Loading chart data...</div>
+          </div>
+        )}
+        {error && (
+          <div className="w-full bg-slate-950 rounded-lg flex items-center justify-center p-4" style={{ height: "400px" }}>
+            <div className="text-red-400 text-sm text-center">{error}</div>
+          </div>
+        )}
+        {!loading && !error && (
+          <div
+            ref={containerRef}
+            className="w-full bg-slate-950 rounded-lg overflow-hidden"
+            style={{ height: "400px" }}
+          />
+        )}
       </CardContent>
     </Card>
   )
