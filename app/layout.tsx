@@ -21,7 +21,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`font-sans antialiased`}>
+      <head></head>
+      <body className={`font-sans antialiased`} suppressHydrationWarning>
         <SolanaWalletProvider>
           {children}
           <Analytics />
